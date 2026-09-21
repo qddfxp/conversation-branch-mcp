@@ -4,22 +4,7 @@
 
 ## 启动配置
 
-将下面命令配置到 MCP 客户端：
-
-```json
-{
-  "mcpServers": {
-    "conversation-branch": {
-      "command": "python",
-      "args": [
-        "E:/conversation-branch-mcp/scripts/cb_mcp.py"
-      ]
-    }
-  }
-}
-```
-
-Windows 如果 `python` 不在 PATH，把 `command` 换成 Python 可执行文件的绝对路径。
+见下文「客户端配置」——那里有可直接复制的 `mcpServers` 片段（含装成命令行工具后的 `cb-mcp` 写法）。
 
 ## 工具范围
 
@@ -61,17 +46,18 @@ python hooks/guard.py --selftest
 
 ## 结构化输出（structuredContent）
 
-`cb_status` 与 `cb_check` 声明了 `outputSchema`，并在结果里返回 `structuredContent`：客户端可直接读字段
-（`head` / `main_version` / `schema_version` / `branches[].status|prompt_changed|outputs` / `ok` / `info` / `warnings` / `problems`），
+`cb_status`、`cb_check` 与 `cb_log` 声明了 `outputSchema`，并在结果里返回 `structuredContent`：客户端可直接读字段
+（`head` / `main_version` / `schema_version` / `branches[].status|prompt_changed|outputs` / `ok` / `info` / `warnings` / `problems`，以及 `log` 的 `inferred` / `total` / `returned` / `events[]`），
 不必解析中文文本。按规范，这类结果里的 `content[0]` 是同一份对象的序列化 JSON（供不支持结构化输出的老客户端兜底），
-因此这两个工具的文本块内容是 JSON 而不是排版好的中文报告；人类可读排版仍由 CLI 提供。
+因此这三个工具的文本块内容是 JSON 而不是排版好的中文报告；人类可读排版仍由 CLI 提供。
 
 底层靠 `cb.py --json`（位置任意，只输出一个 JSON 对象）：
 
     python scripts/cb.py status <root> --json
     python scripts/cb.py check  <root> --json    # 退出码语义不变：发现结构性问题仍是 1
+    python scripts/cb.py log    <root> --json    # 事件与 state.json 逐字段同源；--limit 只影响 returned，不影响 total
 
-其余工具（`cb_log` / `cb_diff` / `cb_compare` / …）尚未实现结构化输出，文本块保持人类可读。
+其余工具（`cb_diff` / `cb_compare` / `cb_export` / …）尚未实现结构化输出，文本块保持人类可读。
 
 ## 客户端配置
 
@@ -88,6 +74,7 @@ python hooks/guard.py --selftest
     }
 
 Windows 下把路径写成 `E:/conversation-branch-mcp/scripts/cb_mcp.py` 或双反斜杠即可（`python` 换成 `py` 也行）。
+若已按 README 装成命令行工具，也可以直接用 `{"command": "cb-mcp", "args": []}`。
 不需要 `pip install` 任何东西，也不需要设置工作目录——工具调用自己带 `root`。
 
 设置项：

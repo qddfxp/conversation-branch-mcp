@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# 打包产物：pip/pipx install . 会在仓库里留下这些，绝不该进版本库
+# （build/lib/ 下是源码的过期副本，混进搜索与 diff 会误导人）
+build/
+dist/
+*.egg-info/

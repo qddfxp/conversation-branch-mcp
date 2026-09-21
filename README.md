@@ -93,3 +93,8 @@ MCP 客户端两种写法都行（详见 [MCP.md](MCP.md)）：
 
     {"command": "cb-mcp", "args": []}
     {"command": "python", "args": ["/绝对路径/scripts/cb_mcp.py"]}
+
+## 授权
+
+Apache License 2.0，见 [LICENSE](LICENSE)。商用、修改、再分发都允许，需保留版权与许可声明；
+本项目按 Apache-2.0 的默认条款提供，不含额外附加条款。
