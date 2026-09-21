@@ -362,6 +362,71 @@ class ConversationBranchTests(unittest.TestCase):
         self.assertNotEqual(future.returncode, 0)
         self.assertIn("高于本脚本", future.stdout)
 
+    def test_rename_moves_dir_state_and_head(self):
+        self.run_cb(self.root, "branch", "a")
+        self.run_cb(self.root, "checkout", "a")
+        self.run_cb(self.root, "rename", "a", "b")
+        state = self.state()
+        self.assertEqual(state["head"], "b", "HEAD 必须跟着改名走")
+        self.assertIn("b", state["branches"])
+        self.assertNotIn("a", state["branches"])
+        self.assertTrue((self.store / "branches" / "b" / "PROMPT.md").is_file())
+        self.assertFalse((self.store / "branches" / "a").exists())
+        self.assertIn("rename", self.run_cb(self.root, "log").stdout)
+
+    def test_rename_rejects_taken_invalid_and_archived_names(self):
+        self.branch("a", prompt="v1-a\n")
+        self.run_cb(self.root, "branch", "b")
+
+        taken = self.run_cb(self.root, "rename", "a", "b", check=False)
+        self.assertNotEqual(taken.returncode, 0)
+        self.assertIn("已被占用", taken.stderr)
+        invalid = self.run_cb(self.root, "rename", "a", "Bad", check=False)
+        self.assertNotEqual(invalid.returncode, 0)
+        # 以上两次失败都不得动到目录或状态
+        self.assertTrue((self.store / "branches" / "a" / "PROMPT.md").is_file())
+        self.assertEqual(self.state()["branches"]["a"]["status"], "testing")
+
+        self.run_cb(self.root, "discard", "--keep", "b")
+        self.assertEqual(self.state()["branches"]["a"]["status"], "archived")
+        archived = self.run_cb(self.root, "rename", "a", "c", check=False)
+        self.assertNotEqual(archived.returncode, 0)
+        self.assertIn("不能重命名", archived.stderr)
+
+    def test_compare_needs_a_testing_branch_then_writes_report(self):
+        empty = self.run_cb(self.root, "compare", check=False)
+        self.assertNotEqual(empty.returncode, 0)
+        self.assertIn("没有 testing 分支", empty.stderr)
+        self.assertFalse((self.store / "COMPARE.md").exists())
+
+        self.branch("a", prompt="v2-a\n")
+        self.run_cb(self.root, "compare")
+        report = (self.store / "COMPARE.md").read_text(encoding="utf-8")
+        for needle in ("多分支横向对比", "| a |", "同步", "a vs 当前 main"):
+            self.assertIn(needle, report)
+
+    def test_demo_workspace_is_healthy_and_never_overwritten(self):
+        target = Path(self.tmp.name) / "demo-ws"
+        out = self.run_cb(str(target), "demo")
+        self.assertIn("示例工作区已生成", out.stdout)
+        store = target / ".branches"
+        state = json.loads((store / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["head"], "main")
+        self.assertEqual(sorted(state["branches"]), ["style-detailed", "style-minimal"])
+        self.assertTrue((store / "COMPARE.md").is_file())
+        for name in state["branches"]:
+            self.assertTrue((store / "branches" / name / "DIFF.md").is_file(), name)
+        healthy = self.run_cb(str(target), "check")
+        self.assertIn("工作区结构完整", healthy.stdout)
+
+        again = self.run_cb(str(target), "demo", check=False)
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("已存在分支工作区", again.stderr)
+        self.assertEqual(
+            json.loads((store / "state.json").read_text(encoding="utf-8"))["branches"].keys(),
+            state["branches"].keys(),
+        )
+
     # ---------------------------------------------------------------- MCP 协议
 
     def mcp_session(self, *messages, extra_raw=b""):
@@ -386,8 +451,10 @@ class ConversationBranchTests(unittest.TestCase):
         self.assertIn("promote", init["instructions"])
         self.assertIn("tools", init["capabilities"])
         by_name = {tool["name"]: tool for tool in replies[1]["result"]["tools"]}
-        self.assertTrue(by_name["cb_status"]["annotations"]["readOnlyHint"])
+        # cb_status 走 cb.py status，会 refresh 重建视图，所以它不是只读；真正只读的是 check 与 log
         self.assertTrue(by_name["cb_check"]["annotations"]["readOnlyHint"])
+        self.assertTrue(by_name["cb_log"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["cb_status"]["annotations"]["readOnlyHint"])
         self.assertFalse(by_name["cb_branch"]["annotations"]["readOnlyHint"])
         self.assertTrue(by_name["cb_promote"]["annotations"]["destructiveHint"])
         self.assertTrue(by_name["cb_discard"]["annotations"]["destructiveHint"])
@@ -402,6 +469,20 @@ class ConversationBranchTests(unittest.TestCase):
         # 时间戳命名/复制型写入不幂等
         self.assertFalse(by_name["cb_export"]["annotations"]["idempotentHint"])
         self.assertFalse(by_name["cb_branch"]["annotations"]["idempotentHint"])
+
+    def test_readonly_tools_really_do_not_touch_disk(self):
+        """readOnlyHint=true 必须是真话：调完 state.json 与 STATE.md 一个字节都不能变。"""
+        self.run_cb(self.root, "branch", "a")
+        before = {name: (self.store / name).read_bytes() for name in ("state.json", "STATE.md")}
+        replies = self.mcp_session(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "cb_check", "arguments": {"root": str(self.root)}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "cb_log", "arguments": {"root": str(self.root)}}},
+        )
+        for reply in replies[1:]:
+            self.assertFalse(reply["result"]["isError"], reply)
+        for name, blob in before.items():
+            self.assertEqual((self.store / name).read_bytes(), blob, f"{name} 被改动，注解与实现对不上")
 
     def test_mcp_promote_without_note_is_refused_and_changes_nothing(self):
         # 两次会话分开：同一会话里的消息全部执行完才能回看状态

@@ -67,8 +67,10 @@ def tool_annotations(title, read_only=False, destructive=False, idempotent=None)
 
 
 TOOLS = [
-    {"name": "cb_status", "description": "查看工作区状态（只读）",
-     "annotations": tool_annotations("查看工作区状态", read_only=True),
+    # 注意：cb_status 走 cb.py status，它会就地 refresh 重建 STATE.md 并刷新 updated
+    # 时间戳，按规范（does not modify its environment）不能算只读，否则会误导客户端跳过确认。
+    {"name": "cb_status", "description": "查看工作区状态（会就地重建 STATE.md 视图与 updated 时间戳，不改分支数据、版本号与 HEAD）",
+     "annotations": tool_annotations("查看工作区状态"),
      "inputSchema": schema({"root": COMMON_ROOT})},
     {"name": "cb_check", "description": "体检工作区结构（只读）：报告孤儿分支目录、缺失 PROMPT.md、归档缺失等问题",
      "annotations": tool_annotations("体检工作区结构", read_only=True),

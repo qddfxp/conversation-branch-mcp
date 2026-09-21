@@ -25,7 +25,8 @@ Windows 如果 `python` 不在 PATH，把 `command` 换成 Python 可执行文�
 
 只暴露 Conversation Branch 的白名单命令：
 
-- 只读：`cb_status`、`cb_check`、`cb_log`、`cb_diff`、`cb_compare`
+- 完全只读（不改任何文件）：`cb_check`、`cb_log`
+- 生成报告/视图（只写自己的报告文件，不动分支数据与版本号）：`cb_status`（会就地重建 `STATE.md` 视图）、`cb_diff`、`cb_compare`
 - 工作区：`cb_init`、`cb_branch`、`cb_checkout`、`cb_note`、`cb_rename`
 - 实验生命周期：`cb_discard`、`cb_promote`、`cb_rollback`
 - 交接：`cb_export`、`cb_verdict`
