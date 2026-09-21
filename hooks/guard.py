@@ -161,6 +161,28 @@ def locate_parts(target: Path, root: Path):
     return parts
 
 
+def _is_real_link(path):
+    """该路径自身是不是符号链接 / Windows 目录联接（重解析点）。不做任何字符串比较。"""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False  # 不存在或无权限：一律当作不是链接（宁漏拦不误伤）
+    if st.st_mode & 0o170000 == 0o120000:  # S_IFLNK
+        return True
+    # Windows：目录联接与符号链接同为重解析点（st_reparse_tag 自 Python 3.8 起可用）
+    return getattr(st, "st_reparse_tag", 0) in (0xA000000C, 0xA0000003)
+
+
+def _link_component(root, parts):
+    """沿 root/parts 逐级找出第一个真实链接（没有则 None）。"""
+    current = Path(root)
+    for part in parts:
+        current = current / part
+        if _is_real_link(current):
+            return current
+    return None
+
+
 def _evaluate(tool_name, file_path):
     """核心判定。返回 (decision, reason)；decision 为 "deny" 或 "allow"。
 
@@ -193,8 +215,12 @@ def _evaluate(tool_name, file_path):
         return ALLOW, ""
 
     # 受保护目录中的符号链接默认拒绝，避免词法路径与真实写入位置不一致。
-    if lexical_store is not None and target != raw_target:
-        if len(parts) >= 2 and parts[0] == STORE_DIRNAME:
+    # 注意：绝不能用 target != raw_target 来判断——resolve() 除链接展开外还会做大小写、8.3
+    # 短名（RUNNER~1）、分隔符等无害归一化，GitHub 的 Windows runner 上这会把每个正常路径
+    # 都误判成链接，把工作区内全部写入拦死。改为逐级检查真实链接属性；且只查工作区根以下
+    # 的组件，避免把工作区自身所在的联接/短名路径也算进来。
+    if lexical_store is not None and len(parts) >= 2 and parts[0] == STORE_DIRNAME:
+        if _link_component(store.parent, parts) is not None:
             return DENY, (
                 "conversation-branch 守卫：拒绝写入解析后路径不同的符号链接/重解析路径；"
                 "请写入真实工作区内的普通文件。"
