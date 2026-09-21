@@ -467,6 +467,22 @@ class ConversationBranchTests(unittest.TestCase):
         self.assertEqual(limited["total"], payload["total"])
         self.assertEqual(len(limited["events"]), 1)
 
+    def test_version_comes_from_a_single_source(self):
+        root = Path(__file__).resolve().parents[1]
+        line = [
+            ln for ln in (root / "scripts" / "cb.py").read_text(encoding="utf-8").splitlines()
+            if ln.startswith("__version__ = ")
+        ]
+        self.assertEqual(len(line), 1, "cb.py 里只能有一处 __version__，否则单一来源就是空话")
+        declared = line[0].split('"')[1]
+
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('version = {attr = "cb.__version__"}', pyproject)
+        self.assertNotIn('\nversion = "', pyproject, "包元数据里不许再硬写一份版本号")
+
+        reply = self.mcp_session({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})[0]
+        self.assertEqual(reply["result"]["serverInfo"]["version"], declared, "serverInfo 必须跟着 cb.py 走")
+
     # ---------------------------------------------------------------- MCP 协议
 
     def mcp_session(self, *messages, extra_raw=b""):

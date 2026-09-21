@@ -55,6 +55,9 @@ ARCHIVE = "archive"
 PARENT_SNAPSHOT = ".parent_prompt.md"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # state.json 结构版本：旧工作区（无该键）在下次写入时自动补记，便于将来做迁移判断
+# 版本单一来源：包元数据（pyproject 用 dynamic 读它）与 MCP serverInfo 都从这里取
+__version__ = "1.1.0"
+
 STATE_SCHEMA_VERSION = 1
 RESERVED = {MAIN, BRANCHES, ARCHIVE}
 

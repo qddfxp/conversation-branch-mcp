@@ -128,6 +128,17 @@ LOG_OUTPUT = {
     },
 }
 
+# 版本单一来源：cb.py 的 __version__（pyproject 也用 dynamic 从这里取），避免包元数据与
+# serverInfo 各写一份、时间长了悄悄不一致。依赖方向与运行方式一致——适配器本来就依赖
+# 同目录的 cb.py（它会子进程调起它）。
+try:
+    import cb as _core
+
+    CORE_VERSION = _core.__version__
+except Exception:  # 极端情况（文件被改名/裁剪）下不因读不到版本号而拒绝服务
+    CORE_VERSION = "0.0.0"
+
+
 # 单一声明表：哪个工具支持结构化输出、对应哪个 schema，只在这里写一次
 OUTPUT_SCHEMAS = {"cb_status": STATUS_OUTPUT, "cb_check": CHECK_OUTPUT, "cb_log": LOG_OUTPUT}
 
@@ -297,7 +308,7 @@ def dispatch(message):
         params = message.get("params") or {}
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "conversation-branch", "version": "1.1.0"}, "instructions": INSTRUCTIONS}}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "conversation-branch", "version": CORE_VERSION}, "instructions": INSTRUCTIONS}}
     if method == "notifications/initialized":
         return None
     if method == "ping":
