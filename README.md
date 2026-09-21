@@ -68,3 +68,28 @@ python -m unittest discover -s "E:/conversation-branch-mcp/tests" -v # 期望 4/
 - MCP 只暴露白名单工具，不执行任意 shell 命令。
 - MCP 不是文件系统沙箱；hook 也拦不住 Bash 里的重定向、`mv`、`cp`、`rm`。
 - `promote` / `discard` / `rollback` 属于正式主线变更，始终需要用户明确决定。
+
+## 安装
+
+两种用法都长期有效，**按需选一种即可**。
+
+**A. 克隆即用（零安装，推荐先试）**
+
+    git clone https://github.com/qddfxp/conversation-branch-mcp
+    python scripts/cb.py demo /tmp/cb-demo    # 生成带主线与两个分支的示例工作区
+    python scripts/cb.py --help
+
+**B. 装成命令行工具（`pip` / `pipx`）**
+
+    pipx install .        # 或：pip install .
+    cb --help
+    cb demo /tmp/cb-demo
+    cb-mcp                # MCP stdio 服务器，供客户端以 stdio 方式拉起
+
+装出来两个入口：`cb` 是 CLI，`cb-mcp` 是 MCP 服务器；零运行时依赖，`requires-python >= 3.8`。
+安装**不移动仓库里的任何文件**，所以 A 里的 `scripts/cb.py` 路径永远可用，两种用法的文档与配置可以混着写。
+
+MCP 客户端两种写法都行（详见 [MCP.md](MCP.md)）：
+
+    {"command": "cb-mcp", "args": []}
+    {"command": "python", "args": ["/绝对路径/scripts/cb_mcp.py"]}
