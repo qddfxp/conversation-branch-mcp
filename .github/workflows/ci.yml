@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: py${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 3.8 是 SKILL.md 声明的下限，必须真的跑起来才算声明成立
+        python-version: ["3.8", "3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 语法检查（零第三方依赖，无需安装）
+        run: python -m py_compile scripts/cb.py scripts/cb_mcp.py tests/test_cb.py
+      - name: 回归测试
+        run: python -m unittest discover -s tests -v
+      - name: 隔离守卫自检
+        run: python hooks/guard.py --selftest
