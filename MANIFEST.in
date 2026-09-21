@@ -1,0 +1,7 @@
+# 源码分发（sdist）里必须带上这些文件：license 是法律要求，其余是文档在这类分发中的唯一形式
+include LICENSE
+include README.md
+include SKILL.md
+include MCP.md
+include hooks/README.md
+include references/evaluation.md
