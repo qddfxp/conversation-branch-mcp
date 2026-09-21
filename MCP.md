@@ -72,3 +72,35 @@ python hooks/guard.py --selftest
     python scripts/cb.py check  <root> --json    # 退出码语义不变：发现结构性问题仍是 1
 
 其余工具（`cb_log` / `cb_diff` / `cb_compare` / …）尚未实现结构化输出，文本块保持人类可读。
+
+## 客户端配置
+
+本服务器是**零第三方依赖的 stdio 服务器**（Python 3.8+），各客户端的 `mcpServers` 结构相同，
+只需把 `args` 指向本仓库里 `scripts/cb_mcp.py` 的**绝对路径**：
+
+    {
+      "mcpServers": {
+        "conversation-branch": {
+          "command": "python",
+          "args": ["/绝对路径/conversation-branch-mcp/scripts/cb_mcp.py"]
+        }
+      }
+    }
+
+Windows 下把路径写成 `E:/conversation-branch-mcp/scripts/cb_mcp.py` 或双反斜杠即可（`python` 换成 `py` 也行）。
+不需要 `pip install` 任何东西，也不需要设置工作目录——工具调用自己带 `root`。
+
+设置项：
+
+- `CB_LOCK_WAIT_SECONDS`：写操作等锁的秒数（默认 10，超时即报错而不是硬闯）。
+
+两个实现细节，排错时有用：
+
+- 分帧方式是**换行分隔的单行 JSON**，不是 `Content-Length` 头。写客户端时别套官方 SDK 里的
+  `Content-Length` 假设——用官方 SDK 连是可以的，它按协商结果处理。
+- `initialize` 会协商 `protocolVersion`（不支持的版本回落到本服务器版本），并返回一段 `instructions`
+  （铁律摘要，含 `main/PROMPT.md` 是唯一事实来源、promote 需要理由等）。
+
+最小连通性自检（stdin 立刻 EOF，进程应静默退出 0）：
+
+    python scripts/cb_mcp.py < /dev/null ; echo "exit=$?"

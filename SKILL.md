@@ -203,3 +203,35 @@ python scripts/cb.py export <root> <name> --to <已存在的父目录>
 - 运行环境：仅依赖 Python 3.8+ 标准库，零第三方依赖、全程本地离线运行（规则与产物不出本机）；示例中的 `python` 在 macOS/Linux 上若不可用请改用 `python3`。
 - `check` 只报告、不修复：它列出的是结构层面的不一致（缺 PROMPT、孤儿分支目录、归档缺失、基准落后等），修复动作仍按脚本流程由用户与 AI 共同完成。
 - MCP 适配层是本地 stdio 薄封装：它只调用 `cb.py` 的白名单子命令，不替代 CLI，也不接受任意 shell 命令；启动方式为 `python scripts/cb_mcp.py`，传输用换行分隔 JSON（不是 `Content-Length` 帧），支持 `ping`，并会回显受支持的协议版本。
+
+## CLI 与 MCP 工具名映射
+
+MCP 那层没有另一套语义，它只是"白名单 + 参数拼装"：工具名去掉 `cb_` 前缀就是子命令，
+根目录永远作为第一个位置参数。所以下面的映射是机械规则，不是手工维护的表：
+
+| MCP 工具 | CLI 等价写法 |
+| --- | --- |
+| `cb_init` | `cb.py init <root> [--prompt F]` |
+| `cb_status` | `cb.py status <root>` |
+| `cb_check` | `cb.py check <root>` |
+| `cb_log` | `cb.py log <root> [--limit N]` |
+| `cb_branch` | `cb.py branch <root> <name> [--from F] [--purpose T] [--no-copy-inputs]` |
+| `cb_checkout` | `cb.py checkout <root> <name>` |
+| `cb_note` | `cb.py note <root> <name> <text>` |
+| `cb_rename` | `cb.py rename <root> <old> <new>` |
+| `cb_diff` | `cb.py diff <root> [name] [--against F] [--against-main]` |
+| `cb_compare` | `cb.py compare <root>` |
+| `cb_verdict` | `cb.py verdict <root> <name> --from <file>` |
+| `cb_export` | `cb.py export <root> <name> --to <dir>` |
+| `cb_promote` | `cb.py promote <root> <name> --note <理由>` |
+| `cb_discard` | `cb.py discard <root> <name...> [--keep K] [--purge]` |
+| `cb_rollback` | `cb.py rollback <root> <ref> [--note 理由]` |
+
+两点刻意保留的差异：
+
+- **`cb_promote` 强制要求 `note`**（schema `required` + 服务端硬校验，缺了直接返回 `isError` 而不调用 `cb.py`）。
+  CLI 只在你省略 `--note` 且 PROMPT 未变时才报错。主线的每一次变更都要留下可审计的理由。
+- **结构化输出只有 `cb_status` / `cb_check` / `cb_log`**（`--json` + `outputSchema`）。
+  `diff` / `compare` / `export` 的产物本身就是报告，包一层 JSON 只是换个容器，故仍是文本。
+
+无论走哪条入口，`promote` / `discard` / `rollback` 都应由用户拍板——MCP 那层不会替你决定主线。
