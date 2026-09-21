@@ -698,11 +698,38 @@ def cmd_checkout(args):
     print("[cb] 提醒：只允许向当前 HEAD 目录写入。")
 
 
+def status_payload(store: Path, state: dict) -> dict:
+    """status 的结构化版本：与 STATE.md 同源（都来自 state.json + 分支目录现状），供 --json 与 MCP structuredContent 使用。"""
+    branches = {}
+    for name, rec in sorted((state.get("branches") or {}).items()):
+        b_dir = branch_dir(store, name)
+        exists = b_dir.is_dir()
+        branches[name] = {
+            "status": rec.get("status"),
+            "from": rec.get("from"),
+            "from_version": rec.get("from_version"),
+            "prompt_changed": prompt_changed(b_dir) if exists else False,
+            "outputs": count_files(b_dir / "outputs") if exists else 0,
+            "note": rec.get("note") or "",
+        }
+    return {
+        "root": str(store.parent),
+        "schema_version": state.get("schema_version"),
+        "head": state.get("head"),
+        "main_version": state.get("main_version"),
+        "updated": state.get("updated"),
+        "branches": branches,
+    }
+
+
 def cmd_status(args):
     root = Path(args.root).resolve()
     store = store_of(root)
     state = load_state(store)
     refresh(store, state)
+    if getattr(args, "json", False):
+        print(json.dumps(status_payload(store, state), ensure_ascii=False))
+        return
     print(read_text(store / STATE_MD))
 
 
@@ -1579,6 +1606,16 @@ def cmd_check(args):
             except Exception as exc:
                 warns.append(f"无法校验 {STATE_MD}：{exc}")
 
+    if getattr(args, "json", False):
+        # JSON 必须先于任何人类可读行打印，否则 stdout 不再是单个 JSON 对象
+        print(json.dumps(
+            {"root": str(root), "ok": not probs, "info": oks, "warnings": warns, "problems": probs},
+            ensure_ascii=False,
+        ))
+        if probs:
+            sys.exit(1)
+        return
+
     print(f"[cb] 工作区自检：{store}")
     for line in oks:
         print(f"  [OK]   {line}")
@@ -1597,7 +1634,10 @@ def cmd_check(args):
 # CLI
 # --------------------------------------------------------------------------- #
 def build_parser():
-    p = argparse.ArgumentParser(description="Conversation Branch 管理器")
+    p = argparse.ArgumentParser(
+        description="Conversation Branch 管理器",
+        epilog="所有命令都接受 --json（位置任意）：只输出一个 JSON 对象，供程序/MCP 层读取；目前 status 与 check 已实现。",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("demo", help="生成含主线与两个分支的示例工作区，用于快速体验")
@@ -1698,7 +1738,13 @@ def build_parser():
 
 def main():
     force_utf8_streams()
-    args = build_parser().parse_args()
+    argv = sys.argv[1:]
+    # --json 允许出现在任意位置（含子命令之后）：解析前统一摘掉，省得给每个子解析器都声明一遍
+    as_json = "--json" in argv
+    if as_json:
+        argv = [item for item in argv if item != "--json"]
+    args = build_parser().parse_args(argv)
+    args.json = as_json
     root = getattr(args, "root", None) or getattr(args, "target", None)
     if root is None:
         args.func(args)

@@ -66,15 +66,57 @@ def tool_annotations(title, read_only=False, destructive=False, idempotent=None)
     }
 
 
+# outputSchema：声明 status/check 的结构化输出，客户端可直接读字段而不用解析中文文本
+STATUS_OUTPUT = {
+    "type": "object",
+    "required": ["root", "head", "main_version", "branches"],
+    "properties": {
+        "root": {"type": "string"},
+        "schema_version": {"type": "integer"},
+        "head": {"type": "string"},
+        "main_version": {"type": "integer"},
+        "updated": {"type": "string"},
+        "branches": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "from": {"type": "string"},
+                    "from_version": {"type": "integer"},
+                    "prompt_changed": {"type": "boolean"},
+                    "outputs": {"type": "integer"},
+                    "note": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+CHECK_OUTPUT = {
+    "type": "object",
+    "required": ["root", "ok", "problems"],
+    "properties": {
+        "root": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "info": {"type": "array", "items": {"type": "string"}},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "problems": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
 TOOLS = [
     # 注意：cb_status 走 cb.py status，它会就地 refresh 重建 STATE.md 并刷新 updated
     # 时间戳，按规范（does not modify its environment）不能算只读，否则会误导客户端跳过确认。
     {"name": "cb_status", "description": "查看工作区状态（会就地重建 STATE.md 视图与 updated 时间戳，不改分支数据、版本号与 HEAD）",
      "annotations": tool_annotations("查看工作区状态"),
-     "inputSchema": schema({"root": COMMON_ROOT})},
+     "inputSchema": schema({"root": COMMON_ROOT}),
+     "outputSchema": STATUS_OUTPUT},
     {"name": "cb_check", "description": "体检工作区结构（只读）：报告孤儿分支目录、缺失 PROMPT.md、归档缺失等问题",
      "annotations": tool_annotations("体检工作区结构", read_only=True),
-     "inputSchema": schema({"root": COMMON_ROOT})},
+     "inputSchema": schema({"root": COMMON_ROOT}),
+     "outputSchema": CHECK_OUTPUT},
     {"name": "cb_log", "description": "查看工作区事件时间线（只读）",
      "annotations": tool_annotations("查看事件时间线", read_only=True),
      "inputSchema": schema({"root": COMMON_ROOT, "limit": {"type": "integer", "minimum": 1, "description": "只看最近 N 条事件"}})},
@@ -128,7 +170,11 @@ def run_tool(name, args):
     if not isinstance(root, str) or not root.strip():
         return result("缺少有效的 root", True)
     command = name[3:]
+    # status/check 额外拿一份结构化输出：cb.py --json 只打印一个 JSON 对象，便于回填 structuredContent
+    json_mode = command in ("status", "check")
     argv = [sys.executable, str(SCRIPT), command, root]
+    if json_mode:
+        argv.insert(2, "--json")
     if command == "init":
         if args.get("prompt") is not None:
             argv += ["--prompt", str(args["prompt"])]
@@ -200,13 +246,24 @@ def run_tool(name, args):
         return result(f"无法启动 cb.py：{exc}", True)
     except subprocess.TimeoutExpired:
         return result(f"cb.py 超过 {TIMEOUT_SECONDS} 秒未返回，已中断。可能是工作区被占用或磁盘卡顿，请稍后重试。", True)
+    structured = None
+    if json_mode:
+        try:
+            structured = json.loads(completed.stdout)
+        except ValueError:
+            structured = None
     text = (completed.stdout or "") + (("\n" + completed.stderr) if completed.stderr else "")
     is_error = completed.returncode != 0
     if name == "cb_check" and is_error and "[cb] 错误" not in completed.stderr:
         # check 用 exit 1 表达“发现结构问题”，那是有效的体检结果而不是工具失败；
         # 真正的崩溃/参数错误（stderr 带“[cb] 错误”）仍按 isError 返回。
         is_error = False
-    return result(text.strip() or "（命令无输出）", is_error)
+    payload = result(text.strip() or "（命令无输出）", is_error)
+    if structured is not None:
+        # cb.py --json 的 stdout 就是那一个 JSON 对象，因此 content[0] 已经是规范要求的
+        # “序列化 JSON 的 text 块”（向后兼容），不要再追加第二份 JSON。
+        payload["structuredContent"] = structured
+    return payload
 
 
 def dispatch(message):

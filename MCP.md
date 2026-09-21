@@ -58,3 +58,17 @@ MCP 解决的是工具发现、参数结构化和客户端集成，不是文件�
 python scripts/cb.py check <root>
 python hooks/guard.py --selftest
 ```
+
+## 结构化输出（structuredContent）
+
+`cb_status` 与 `cb_check` 声明了 `outputSchema`，并在结果里返回 `structuredContent`：客户端可直接读字段
+（`head` / `main_version` / `schema_version` / `branches[].status|prompt_changed|outputs` / `ok` / `info` / `warnings` / `problems`），
+不必解析中文文本。按规范，这类结果里的 `content[0]` 是同一份对象的序列化 JSON（供不支持结构化输出的老客户端兜底），
+因此这两个工具的文本块内容是 JSON 而不是排版好的中文报告；人类可读排版仍由 CLI 提供。
+
+底层靠 `cb.py --json`（位置任意，只输出一个 JSON 对象）：
+
+    python scripts/cb.py status <root> --json
+    python scripts/cb.py check  <root> --json    # 退出码语义不变：发现结构性问题仍是 1
+
+其余工具（`cb_log` / `cb_diff` / `cb_compare` / …）尚未实现结构化输出，文本块保持人类可读。

@@ -427,6 +427,34 @@ class ConversationBranchTests(unittest.TestCase):
             state["branches"].keys(),
         )
 
+    def test_status_json_is_pure_json_and_matches_state(self):
+        self.branch("a", prompt="v2-a\n")
+        out = self.run_cb(self.root, "status", "--json")
+        payload = json.loads(out.stdout)  # 纯 JSON：多一行人类文本都会解析失败
+        state = self.state()
+        self.assertEqual(payload["head"], state["head"])
+        self.assertEqual(payload["main_version"], state["main_version"])
+        self.assertEqual(payload["schema_version"], state["schema_version"])
+        self.assertEqual(list(payload["branches"]), ["a"])
+        self.assertEqual(payload["branches"]["a"]["status"], "testing")
+        self.assertTrue(payload["branches"]["a"]["prompt_changed"], "改写过的分支必须标为已改")
+        self.assertIn("a", self.run_cb(self.root, "status").stdout)  # 人类可读输出仍在
+
+    def test_check_json_keeps_exit_code_and_lists(self):
+        healthy = json.loads(self.run_cb(self.root, "check", "--json").stdout)
+        self.assertTrue(healthy["ok"])
+        self.assertEqual(healthy["problems"], [])
+        self.assertTrue(healthy["info"])
+
+        ghost = self.store / "branches" / "ghost"
+        ghost.mkdir(parents=True)
+        (ghost / "PROMPT.md").write_text("x\n", encoding="utf-8")
+        broken = self.run_cb(self.root, "check", "--json", check=False)
+        self.assertEqual(broken.returncode, 1, "--json 不得改变退出码语义")
+        payload = json.loads(broken.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["problems"])
+
     # ---------------------------------------------------------------- MCP 协议
 
     def mcp_session(self, *messages, extra_raw=b""):
@@ -483,6 +511,43 @@ class ConversationBranchTests(unittest.TestCase):
             self.assertFalse(reply["result"]["isError"], reply)
         for name, blob in before.items():
             self.assertEqual((self.store / name).read_bytes(), blob, f"{name} 被改动，注解与实现对不上")
+
+    def test_mcp_returns_structured_content_for_status_and_check(self):
+        self.run_cb(self.root, "branch", "a")
+        replies = self.mcp_session(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "cb_status", "arguments": {"root": str(self.root)}}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "cb_check", "arguments": {"root": str(self.root)}}},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "cb_log", "arguments": {"root": str(self.root)}}},
+        )
+        by_name = {tool["name"]: tool for tool in replies[1]["result"]["tools"]}
+        self.assertIn("outputSchema", by_name["cb_status"])
+        self.assertIn("outputSchema", by_name["cb_check"])
+        self.assertNotIn("outputSchema", by_name["cb_log"], "没实现结构化输出的工具不要声明 outputSchema")
+
+        status = replies[2]["result"]
+        self.assertFalse(status["isError"], status)
+        self.assertEqual(status["structuredContent"]["head"], self.state()["head"])
+        self.assertEqual(status["structuredContent"]["head"], "a", "branch 会把 HEAD 切到新分支")
+        self.assertEqual(status["structuredContent"]["main_version"], 1)
+        self.assertEqual(list(status["structuredContent"]["branches"]), ["a"])
+        self.assertEqual(status["structuredContent"]["main_version"], self.state()["main_version"])
+        # 规范：返回 structuredContent 时 text 块要是同一份序列化 JSON（向后兼容老客户端）
+        self.assertEqual(len(status["content"]), 1, "不要重复塞两份 JSON")
+        self.assertEqual(json.loads(status["content"][0]["text"]), status["structuredContent"])
+
+        check = replies[3]["result"]
+        self.assertFalse(check["isError"], check)
+        self.assertTrue(check["structuredContent"]["ok"])
+        self.assertEqual(check["structuredContent"]["problems"], [])
+        self.assertTrue(check["structuredContent"]["info"])
+        self.assertTrue(json.loads(check["content"][0]["text"])["ok"])
+
+        plain = replies[4]["result"]
+        self.assertFalse(plain["isError"], plain)
+        self.assertNotIn("structuredContent", plain, "未声明 outputSchema 的工具不返回 structuredContent")
+        self.assertIn("[branch]", plain["content"][0]["text"], "未走 --json 的工具仍是人类可读文本")
 
     def test_mcp_promote_without_note_is_refused_and_changes_nothing(self):
         # 两次会话分开：同一会话里的消息全部执行完才能回看状态
