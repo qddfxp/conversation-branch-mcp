@@ -455,6 +455,18 @@ class ConversationBranchTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["problems"])
 
+    def test_log_json_exposes_events(self):
+        self.branch("a")
+        payload = json.loads(self.run_cb(self.root, "log", "--json").stdout)
+        state = self.state()
+        self.assertFalse(payload["inferred"], "有事件记录就不该走降级推导")
+        self.assertEqual(payload["total"], len(state["events"]))
+        self.assertEqual(payload["events"], state["events"], "事件必须与 state.json 同源，不能是重新格式化的字符串")
+        # --limit 只影响返回条数，不影响总数
+        limited = json.loads(self.run_cb(self.root, "log", "--json", "--limit", "1").stdout)
+        self.assertEqual(limited["total"], payload["total"])
+        self.assertEqual(len(limited["events"]), 1)
+
     # ---------------------------------------------------------------- MCP 协议
 
     def mcp_session(self, *messages, extra_raw=b""):
@@ -519,12 +531,15 @@ class ConversationBranchTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "cb_status", "arguments": {"root": str(self.root)}}},
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "cb_check", "arguments": {"root": str(self.root)}}},
-            {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "cb_log", "arguments": {"root": str(self.root)}}},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "cb_compare", "arguments": {"root": str(self.root)}}},
         )
         by_name = {tool["name"]: tool for tool in replies[1]["result"]["tools"]}
         self.assertIn("outputSchema", by_name["cb_status"])
         self.assertIn("outputSchema", by_name["cb_check"])
-        self.assertNotIn("outputSchema", by_name["cb_log"], "没实现结构化输出的工具不要声明 outputSchema")
+        self.assertIn("outputSchema", by_name["cb_log"])
+        self.assertEqual(by_name["cb_check"]["outputSchema"]["required"], ["root", "ok", "problems"])
+        self.assertNotIn("outputSchema", by_name["cb_diff"], "没实现结构化输出的工具不要声明 outputSchema")
+        self.assertNotIn("outputSchema", by_name["cb_promote"], "写操作也没有 outputSchema")
 
         status = replies[2]["result"]
         self.assertFalse(status["isError"], status)
@@ -547,7 +562,7 @@ class ConversationBranchTests(unittest.TestCase):
         plain = replies[4]["result"]
         self.assertFalse(plain["isError"], plain)
         self.assertNotIn("structuredContent", plain, "未声明 outputSchema 的工具不返回 structuredContent")
-        self.assertIn("[branch]", plain["content"][0]["text"], "未走 --json 的工具仍是人类可读文本")
+        self.assertTrue(plain["content"][0]["text"].strip(), "未走 --json 的工具仍是人类可读文本")
 
     def test_mcp_promote_without_note_is_refused_and_changes_nothing(self):
         # 两次会话分开：同一会话里的消息全部执行完才能回看状态

@@ -1451,12 +1451,35 @@ def cmd_log(args):
     events = state.get("events") or []
     if events:
         shown = events[-limit:] if limit else events
+        if getattr(args, "json", False):
+            print(json.dumps(
+                {"root": str(root), "inferred": False, "total": len(events), "returned": len(shown), "events": shown},
+                ensure_ascii=False,
+            ))
+            return
         print(f"[cb] 工作区事件时间线（共 {len(events)} 条，按时间正序显示最近 {len(shown)} 条）：")
         for ev in shown:
             print(f"{ev.get('time', '-')} [{ev.get('type', '-')}] {ev.get('branch', '-')} — {ev.get('detail', '')}")
         return
     print("[cb] 该工作区创建于旧版本（无事件记录），以下为从 CHANGELOG 与 archive 推导的时间线，仅含主线版本变更与归档动作。")
     entries = derive_legacy_timeline(store)
+    if getattr(args, "json", False):
+        # 降级推导也要能结构化输出，否则旧工作区上的日志工具对程序完全不可用
+        shown_entries = entries[-limit:] if limit else entries
+        print(json.dumps(
+            {
+                "root": str(root),
+                "inferred": True,
+                "total": len(entries),
+                "returned": len(shown_entries),
+                "events": [
+                    {"time": time_s, "type": etype, "branch": branch, "detail": detail}
+                    for time_s, etype, branch, detail in shown_entries
+                ],
+            },
+            ensure_ascii=False,
+        ))
+        return
     if not entries:
         print("[cb] 未推导出任何版本变更或归档记录，暂无可显示的时间线。")
         return

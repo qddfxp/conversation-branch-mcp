@@ -105,18 +105,42 @@ CHECK_OUTPUT = {
     },
 }
 
+LOG_OUTPUT = {
+    "type": "object",
+    "required": ["root", "total", "events"],
+    "properties": {
+        "root": {"type": "string"},
+        "inferred": {"type": "boolean"},
+        "total": {"type": "integer"},
+        "returned": {"type": "integer"},
+        "events": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "time": {"type": "string"},
+                    "type": {"type": "string"},
+                    "branch": {"type": "string"},
+                    "detail": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+# 单一声明表：哪个工具支持结构化输出、对应哪个 schema，只在这里写一次
+OUTPUT_SCHEMAS = {"cb_status": STATUS_OUTPUT, "cb_check": CHECK_OUTPUT, "cb_log": LOG_OUTPUT}
+
 
 TOOLS = [
     # 注意：cb_status 走 cb.py status，它会就地 refresh 重建 STATE.md 并刷新 updated
     # 时间戳，按规范（does not modify its environment）不能算只读，否则会误导客户端跳过确认。
     {"name": "cb_status", "description": "查看工作区状态（会就地重建 STATE.md 视图与 updated 时间戳，不改分支数据、版本号与 HEAD）",
      "annotations": tool_annotations("查看工作区状态"),
-     "inputSchema": schema({"root": COMMON_ROOT}),
-     "outputSchema": STATUS_OUTPUT},
+     "inputSchema": schema({"root": COMMON_ROOT})},
     {"name": "cb_check", "description": "体检工作区结构（只读）：报告孤儿分支目录、缺失 PROMPT.md、归档缺失等问题",
      "annotations": tool_annotations("体检工作区结构", read_only=True),
-     "inputSchema": schema({"root": COMMON_ROOT}),
-     "outputSchema": CHECK_OUTPUT},
+     "inputSchema": schema({"root": COMMON_ROOT})},
     {"name": "cb_log", "description": "查看工作区事件时间线（只读）",
      "annotations": tool_annotations("查看事件时间线", read_only=True),
      "inputSchema": schema({"root": COMMON_ROOT, "limit": {"type": "integer", "minimum": 1, "description": "只看最近 N 条事件"}})},
@@ -171,7 +195,7 @@ def run_tool(name, args):
         return result("缺少有效的 root", True)
     command = name[3:]
     # status/check 额外拿一份结构化输出：cb.py --json 只打印一个 JSON 对象，便于回填 structuredContent
-    json_mode = command in ("status", "check")
+    json_mode = command in ("status", "check", "log")
     argv = [sys.executable, str(SCRIPT), command, root]
     if json_mode:
         argv.insert(2, "--json")
@@ -281,7 +305,14 @@ def dispatch(message):
             return None
         return {"jsonrpc": "2.0", "id": request_id, "result": {}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
+        # outputSchema 统一在这里附加（见 OUTPUT_SCHEMAS），TOOLS 里只写工具本身
+        tools = [
+            dict(tool, outputSchema=OUTPUT_SCHEMAS[tool["name"]])
+            if tool["name"] in OUTPUT_SCHEMAS
+            else tool
+            for tool in TOOLS
+        ]
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
     if method == "tools/call":
         params = message.get("params") or {}
         name = params.get("name", "")
