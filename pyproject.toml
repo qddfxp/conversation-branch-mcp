@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conversation-branch"
+version = "1.1.0"
+description = "对话分支管理器：一条主线加任意实验分支，实验成功才提升为主线"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+classifiers = [
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.12",
+]
+
+# 安装后可直接用：cb 就是 CLI，cb-mcp 是 MCP stdio 服务器
+[project.scripts]
+cb = "cb:main"
+cb-mcp = "cb_mcp:main"
+
+# 刻意不把 scripts/ 改造成包、也不移动文件：package-dir 把 scripts/ 映射成两个顶层模块，
+# 于是仓库里的 scripts/cb.py 路径对已有文档、测试、MCP 配置全部保持有效。
+[tool.setuptools]
+py-modules = ["cb", "cb_mcp"]
+
+[tool.setuptools.package-dir]
+"" = "scripts"

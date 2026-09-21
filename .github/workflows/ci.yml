@@ -25,3 +25,20 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: 隔离守卫自检
         run: python hooks/guard.py --selftest
+
+  package:
+    name: pipx 安装冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装为命令行工具
+        run: pip install .
+      - name: 安装后的入口真的能用（含 cb_mcp 能否找到核心脚本）
+        run: |
+          cd /tmp
+          cb --help > /dev/null
+          cb-mcp < /dev/null
+          echo "cb-mcp exit=$?"
