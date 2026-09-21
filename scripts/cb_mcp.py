@@ -37,36 +37,80 @@ def flag(description):
 
 COMMON_ROOT = text("Conversation Branch 工作区根目录")
 BRANCH_NAME = text("实验分支名（只能用小写字母、数字、连字符；main 是保留名）")
+
+INSTRUCTIONS = (
+    "Conversation Branch 用 git-branch 式的规则隔离，给长期任务的提示词/工作规范做 A/B 实验。铁律："
+    "(1) 一切写入只允许落在 HEAD 对应的目录；HEAD=main 时 main/ 只读，正式任务以 main/PROMPT.md 为唯一事实来源。"
+    "(2) 分支试跑必须与主线同源输入，评估维度在试跑前写入分支 NOTES.md，不得事后找补。"
+    "(3) 分支只有两种离场方式：discard（归档，主线零改动）或 promote（成为新主线，旧主线自动归档可回滚）。"
+    "(4) promote/discard/rollback 必须由用户明确决定，AI 不得自行提升；提升必须给出理由（note）。"
+    "(5) 典型流程：cb_status 看全貌 → cb_branch 建分支 → 在 HEAD 分支干活 → cb_diff/cb_verdict 记录 → 用户裁决后 cb_promote 或 cb_discard。"
+)
+
+
+def tool_annotations(title, read_only=False, destructive=False, idempotent=None):
+    """MCP 工具注解：客户端据此决定是否弹审批、能否在传输失败后安全重试。
+
+    规范原文（schema.ts / ToolAnnotations）：readOnlyHint 为 true 表示"does not modify its
+    environment"；destructiveHint 为 false 表示"performs only additive updates"（默认 true）。
+    所以新增文件的写入工具（如 cb_diff / cb_compare / cb_export）应当是 readOnly=false +
+    destructive=false，只有会改动主线或删除分支的三个工具才标 destructive=true。
+    idempotentHint 仅在 readOnlyHint=false 时有意义，只读工具天然幂等。
+    """
+    return {
+        "title": title,
+        "readOnlyHint": read_only,
+        "destructiveHint": destructive,
+        "idempotentHint": read_only if idempotent is None else idempotent,
+        "openWorldHint": False,
+    }
+
+
 TOOLS = [
     {"name": "cb_status", "description": "查看工作区状态（只读）",
+     "annotations": tool_annotations("查看工作区状态", read_only=True),
      "inputSchema": schema({"root": COMMON_ROOT})},
     {"name": "cb_check", "description": "体检工作区结构（只读）：报告孤儿分支目录、缺失 PROMPT.md、归档缺失等问题",
+     "annotations": tool_annotations("体检工作区结构", read_only=True),
      "inputSchema": schema({"root": COMMON_ROOT})},
     {"name": "cb_log", "description": "查看工作区事件时间线（只读）",
+     "annotations": tool_annotations("查看事件时间线", read_only=True),
      "inputSchema": schema({"root": COMMON_ROOT, "limit": {"type": "integer", "minimum": 1, "description": "只看最近 N 条事件"}})},
-    {"name": "cb_diff", "description": "生成分支 PROMPT 与父版本（或主线）的规则差异",
+    {"name": "cb_diff", "description": "生成分支 PROMPT 与父版本（或主线）的规则差异（写入分支 DIFF.md，不改主线）",
+     "annotations": tool_annotations("生成规则差异", idempotent=True),
      "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "against_main": flag("改和主线比，而不是和创建时的父版本比"), "against": text("改和指定分支比")}, required=("root",))},
-    {"name": "cb_compare", "description": "生成多分支横向对比（写入 COMPARE.md，只读工作区状态）",
+    {"name": "cb_compare", "description": "生成多分支横向对比（写入 COMPARE.md，不改主线）",
+     "annotations": tool_annotations("多分支横向对比", idempotent=True),
      "inputSchema": schema({"root": COMMON_ROOT})},
     {"name": "cb_init", "description": "初始化工作区（在 root 下建立 .branches/ 与主线）",
+     "annotations": tool_annotations("初始化工作区"),
      "inputSchema": schema({"root": COMMON_ROOT, "prompt": text("主线 PROMPT.md 的初始内容；省略则生成占位模板")}, required=("root",))},
     {"name": "cb_branch", "description": "创建实验分支，默认复制同源 inputs",
+     "annotations": tool_annotations("创建实验分支"),
      "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "from": text("从哪个分支复制，默认当前 HEAD"), "purpose": text("实验目的/假设，写入 NOTES.md"), "no_copy_inputs": flag("不复制 inputs（默认会复制）")}, required=("root", "name"))},
     {"name": "cb_checkout", "description": "切换 HEAD 到指定分支（实验期间主线只读，HEAD 决定谁可以被改动）",
+     "annotations": tool_annotations("切换 HEAD", idempotent=True),
      "inputSchema": schema({"root": COMMON_ROOT, "name": text("目标分支名，或 main")}, required=("root", "name"))},
     {"name": "cb_note", "description": "更新分支 NOTES.md 的备注",
+     "annotations": tool_annotations("更新分支备注", idempotent=True),
      "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "text": text("要写入的备注内容")}, required=("root", "name", "text"))},
     {"name": "cb_rename", "description": "重命名实验分支",
+     "annotations": tool_annotations("重命名分支"),
      "inputSchema": schema({"root": COMMON_ROOT, "old": text("原分支名"), "new": text("新分支名")}, required=("root", "old", "new"))},
-    {"name": "cb_discard", "description": "舍弃实验分支：names 指定要舍弃的分支，keep 指定保留的赢家（其余全舍弃）；names 与 keep 互斥，必须给其一。默认归档到 archive/，加 purge 则真删目录。舍弃 HEAD 所在分支时 HEAD 自动回 main",
+    {"name": "cb_discard", "description": "舍弃实验分支：names 指定要舍弃的分支，keep 指定保留的赢家（其余全舍弃）；names 与 keep 互斥，必须给其一。默认归档到 archive/，加 purge 则真删目录（不可恢复）。舍弃 HEAD 所在分支时 HEAD 自动回 main",
+     "annotations": tool_annotations("舍弃实验分支", destructive=True),
      "inputSchema": schema({"root": COMMON_ROOT, "names": {"type": "array", "items": {"type": "string"}, "description": "要舍弃的分支名列表"}, "keep": text("要保留的分支名，其余分支全部舍弃（与 names 互斥）"), "purge": flag("真删除分支目录而不是归档（不可恢复，需用户明确同意）")}, required=("root",))},
-    {"name": "cb_promote", "description": "把实验分支提升为新主线：旧主线归档、版本号 +1（需要用户明确批准）。分支 PROMPT.md 与创建时完全相同且未给 note 时会被拒绝",
-     "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "note": text("提升理由，写入主线 CHANGELOG.md；PROMPT.md 未改动时必填")}, required=("root", "name"))},
-    {"name": "cb_rollback", "description": "把主线回滚到某个归档版本：ref 可以是版本号或 archive/ 下的目录名（需要用户明确批准）",
+    {"name": "cb_promote", "description": "把实验分支提升为新主线：旧主线归档、版本号 +1（必须由用户明确批准）。note 为必填的提升理由，写入主线 CHANGELOG.md 供事后审计",
+     "annotations": tool_annotations("提升分支为新主线", destructive=True),
+     "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "note": text("提升理由（必填）：为什么这个分支更好、依据是什么，写入主线 CHANGELOG.md")}, required=("root", "name", "note"))},
+    {"name": "cb_rollback", "description": "把主线回滚到某个归档版本：ref 可以是版本号或 archive/ 下的目录名（必须由用户明确批准）",
+     "annotations": tool_annotations("回滚主线到归档版本", destructive=True),
      "inputSchema": schema({"root": COMMON_ROOT, "ref": text("目标版本号（如 1）或 archive/ 下的归档目录名"), "note": text("回滚理由，写入主线 CHANGELOG.md")}, required=("root", "ref"))},
-    {"name": "cb_export", "description": "导出分支交接包（只读，不改工作区）：生成自带上下文的目录，可交给全新对话测试",
+    {"name": "cb_export", "description": "导出分支交接包（不改工作区状态）：生成自带上下文的目录，可交给全新对话测试",
+     "annotations": tool_annotations("导出分支交接包"),
      "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "to": text("导出容器目录（必须已存在），cb.py 会在其中新建 <name>-export-<时间戳>/ 交接包")}, required=("root", "name", "to"))},
     {"name": "cb_verdict", "description": "把外部测试结论回流到分支 VERDICT.md（只记录，不执行 promote/discard）",
+     "annotations": tool_annotations("回流实验结论"),
      "inputSchema": schema({"root": COMMON_ROOT, "name": BRANCH_NAME, "from_file": text("结论文本文件路径，内容会被读取并写入该分支 VERDICT.md")}, required=("root", "name", "from_file"))},
 ]
 
@@ -119,9 +163,14 @@ def run_tool(name, args):
         if args.get("purge"):
             argv.append("--purge")
     elif command == "promote":
+        if not str(args.get("note") or "").strip():
+            return result(
+                "cb_promote 必须提供 note（提升理由）：主线的每一次变更都要留下可审计的理由，"
+                "并说明为什么这个分支比当前主线更好。",
+                True,
+            )
         argv += [str(args.get("name", ""))]
-        if args.get("note"):
-            argv += ["--note", str(args["note"])]
+        argv += ["--note", str(args["note"])]
     elif command == "rollback":
         argv += [str(args.get("ref", ""))]
         if args.get("note"):
@@ -165,7 +214,7 @@ def dispatch(message):
         params = message.get("params") or {}
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": version, "capabilities": {"tools": {}}, "serverInfo": {"name": "conversation-branch", "version": "1.0.0"}}}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "conversation-branch", "version": "1.1.0"}, "instructions": INSTRUCTIONS}}
     if method == "notifications/initialized":
         return None
     if method == "ping":

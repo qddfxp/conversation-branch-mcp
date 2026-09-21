@@ -54,6 +54,8 @@ BRANCHES = "branches"
 ARCHIVE = "archive"
 PARENT_SNAPSHOT = ".parent_prompt.md"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+# state.json 结构版本：旧工作区（无该键）在下次写入时自动补记，便于将来做迁移判断
+STATE_SCHEMA_VERSION = 1
 RESERVED = {MAIN, BRANCHES, ARCHIVE}
 
 
@@ -121,6 +123,14 @@ def load_state(store: Path) -> dict:
 
 
 def save_state(store: Path, state: dict):
+    # 写入前先拦降级：旧脚本碰到更新格式的工作区必须拒绝写，而不是把版本号静默改回去
+    version = state.get("schema_version")
+    if isinstance(version, int) and version > STATE_SCHEMA_VERSION:
+        die(
+            f"state.json 的 schema_version=v{version} 高于本脚本支持的 v{STATE_SCHEMA_VERSION}："
+            f"已拒绝写入，以免把工作区静默降级。请用更新版本的 cb.py 操作该工作区。"
+        )
+    state["schema_version"] = STATE_SCHEMA_VERSION
     state["updated"] = now_human()
     write_text(store / STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2))
 
@@ -1475,6 +1485,18 @@ def cmd_check(args):
                     warns.append(f"发现符号链接（请确认不会绕过隔离）：{entry.relative_to(store)}")
 
     if state is not None:
+        version = state.get("schema_version")
+        if version is None:
+            warns.append(
+                f"state.json 无 schema_version（旧格式工作区，下次任何写入会自动补记为 v{STATE_SCHEMA_VERSION}）"
+            )
+        elif isinstance(version, int) and version > STATE_SCHEMA_VERSION:
+            probs.append(
+                f"state.json 的 schema_version=v{version} 高于本脚本支持的 v{STATE_SCHEMA_VERSION}："
+                f"该工作区由更新版本的 cb.py 写过，请勿用当前脚本继续写入"
+            )
+        else:
+            oks.append(f"state.json 结构版本 v{version}（当前脚本 v{STATE_SCHEMA_VERSION}）")
         head = state.get("head")
         if head == MAIN:
             oks.append("HEAD=main（当前处于主线）")
@@ -1540,6 +1562,22 @@ def cmd_check(args):
             arc = p.get("archive")
             if arc and not (store / arc).is_dir():
                 warns.append(f"promote 记录 '{p.get('branch')}' 的旧主线归档缺失：{arc}")
+
+        # STATE.md 头部写着“勿手改”，这里就是那个执行者：与渲染结果逐字对比。
+        state_md_path = store / STATE_MD
+        if not state_md_path.is_file():
+            warns.append(f"缺少 {STATE_MD}（人类可读视图；任何写入都会自动重建）")
+        else:
+            try:
+                if read_text(state_md_path) != render_state_md(store, state):
+                    warns.append(
+                        f"{STATE_MD} 与 state.json 不一致（被手工编辑或未刷新）："
+                        f"以 state.json 为准，跑任意写命令即可重建"
+                    )
+                else:
+                    oks.append(f"{STATE_MD} 与 state.json 完全一致")
+            except Exception as exc:
+                warns.append(f"无法校验 {STATE_MD}：{exc}")
 
     print(f"[cb] 工作区自检：{store}")
     for line in oks:

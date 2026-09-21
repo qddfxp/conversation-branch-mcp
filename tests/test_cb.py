@@ -289,6 +289,79 @@ class ConversationBranchTests(unittest.TestCase):
         # 但真的打不开工作区仍然要 isError
         self.assertTrue(replies[2]["result"]["isError"], replies[2])
 
+    def test_concurrent_writers_do_not_lose_updates(self):
+        """5 个进程同时建分支：没有 state.lock 时会丢更新，加锁后必须 5 条全在。"""
+        names = ["c{0}".format(i) for i in range(5)]
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(CB), "branch", str(self.root), name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            for name in names
+        ]
+        for proc in procs:
+            _, err = proc.communicate()
+            self.assertEqual(proc.returncode, 0, err.decode("utf-8", "replace"))
+        recorded = self.state()["branches"]
+        for name in names:
+            self.assertIn(name, recorded)
+            # 不光看数量：每条记录必须是完整的 testing 分支，且目录真的建出来了
+            self.assertEqual(recorded[name]["status"], "testing")
+            self.assertTrue((self.store / "branches" / name / "PROMPT.md").is_file(), name)
+        self.assertEqual(len(names), len([n for n in recorded if n.startswith("c")]))
+
+    def test_write_refuses_to_downgrade_newer_state_format(self):
+        state_path = self.store / "state.json"
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        raw["schema_version"] = 99
+        state_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        before = state_path.read_bytes()
+
+        refused = self.run_cb(self.root, "branch", "downgrade", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("高于本脚本", refused.stderr)
+        # 拒绝写入必须是彻底的：版本号、分支表、字节内容都不能变
+        self.assertEqual(state_path.read_bytes(), before)
+        self.assertEqual(self.state()["schema_version"], 99)
+        self.assertNotIn("downgrade", self.state()["branches"])
+
+    def test_check_detects_state_md_drift(self):
+        self.run_cb(self.root, "branch", "a")
+        check = self.run_cb(self.root, "check", check=False)
+        self.assertNotIn("不一致", check.stdout)
+        self.assertIn("完全一致", check.stdout)
+
+        state_md = self.store / "STATE.md"
+        state_md.write_text(state_md.read_text(encoding="utf-8") + "\n手改的一行\n", encoding="utf-8")
+        drifted = self.run_cb(self.root, "check", check=False)
+        self.assertEqual(drifted.returncode, 0, "漂移是警告，不该把整个体检判为失败")
+        self.assertIn("不一致", drifted.stdout)
+
+        # 任何写命令都会重建视图，漂移随之消失
+        self.run_cb(self.root, "note", "a", "刷新视图")
+        self.assertNotIn("不一致", self.run_cb(self.root, "check", check=False).stdout)
+
+    def test_check_reports_state_schema_version(self):
+        self.run_cb(self.root, "branch", "a")
+        self.assertEqual(self.state()["schema_version"], 1)
+        self.assertIn("结构版本 v1", self.run_cb(self.root, "check", check=False).stdout)
+
+        state_path = self.store / "state.json"
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        del raw["schema_version"]
+        state_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        legacy = self.run_cb(self.root, "check", check=False)
+        self.assertIn("schema_version", legacy.stdout)
+
+        raw["schema_version"] = 99
+        state_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        future = self.run_cb(self.root, "check", check=False)
+        self.assertNotEqual(future.returncode, 0)
+        self.assertIn("高于本脚本", future.stdout)
+
     # ---------------------------------------------------------------- MCP 协议
 
     def mcp_session(self, *messages, extra_raw=b""):
@@ -302,6 +375,55 @@ class ConversationBranchTests(unittest.TestCase):
         self.assertNotIn(b"Content-Length", completed.stdout)
         lines = [line for line in completed.stdout.decode("utf-8").split("\n") if line.strip()]
         return [json.loads(line) for line in lines]
+
+    def test_mcp_advertises_annotations_and_instructions(self):
+        replies = self.mcp_session(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+        init = replies[0]["result"]
+        self.assertIn("main/PROMPT.md", init["instructions"])
+        self.assertIn("promote", init["instructions"])
+        self.assertIn("tools", init["capabilities"])
+        by_name = {tool["name"]: tool for tool in replies[1]["result"]["tools"]}
+        self.assertTrue(by_name["cb_status"]["annotations"]["readOnlyHint"])
+        self.assertTrue(by_name["cb_check"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["cb_branch"]["annotations"]["readOnlyHint"])
+        self.assertTrue(by_name["cb_promote"]["annotations"]["destructiveHint"])
+        self.assertTrue(by_name["cb_discard"]["annotations"]["destructiveHint"])
+        self.assertFalse(by_name["cb_note"]["annotations"]["destructiveHint"])
+        for tool in by_name.values():
+            self.assertFalse(tool["annotations"]["openWorldHint"], tool["name"])
+            self.assertIn("title", tool["annotations"])
+        self.assertIn("note", by_name["cb_promote"]["inputSchema"]["required"])
+        # 幂等标注：报告重生成/备注/切 HEAD 重复调用无副作用，可安全重试
+        self.assertTrue(by_name["cb_diff"]["annotations"]["idempotentHint"])
+        self.assertTrue(by_name["cb_checkout"]["annotations"]["idempotentHint"])
+        # 时间戳命名/复制型写入不幂等
+        self.assertFalse(by_name["cb_export"]["annotations"]["idempotentHint"])
+        self.assertFalse(by_name["cb_branch"]["annotations"]["idempotentHint"])
+
+    def test_mcp_promote_without_note_is_refused_and_changes_nothing(self):
+        # 两次会话分开：同一会话里的消息全部执行完才能回看状态
+        first = self.mcp_session(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "cb_branch", "arguments": {"root": str(self.root), "name": "winner"}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "cb_promote", "arguments": {"root": str(self.root), "name": "winner"}}},
+        )
+        self.assertFalse(first[1]["result"]["isError"], first[1])
+        refused = first[2]["result"]
+        self.assertTrue(refused["isError"], refused)
+        self.assertIn("note", refused["content"][0]["text"])
+        # 被拒绝时主线与分支状态都不能变
+        self.assertEqual(self.state()["main_version"], 1)
+        self.assertEqual(self.state()["branches"]["winner"]["status"], "testing")
+
+        second = self.mcp_session(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "cb_promote", "arguments": {"root": str(self.root), "name": "winner", "note": "理由充分"}}},
+        )
+        self.assertFalse(second[1]["result"]["isError"], second[1])
+        self.assertEqual(self.state()["main_version"], 2)
 
     def test_mcp_stdio_uses_newline_delimited_json(self):
         replies = self.mcp_session(
